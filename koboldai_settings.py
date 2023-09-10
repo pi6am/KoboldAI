@@ -25,6 +25,8 @@ enable_whitelist = False
 if importlib.util.find_spec("tortoise") is not None:
     from tortoise import api
     from tortoise.utils.audio import load_voices
+    
+password_vars = ["horde_api_key", "privacy_password", "img_gen_api_password"]
 
 def clean_var_for_emit(value):
     if isinstance(value, KoboldStoryRegister) or isinstance(value, KoboldWorldInfo):
@@ -37,7 +39,7 @@ def clean_var_for_emit(value):
         return value
 
 def process_variable_changes(socketio, classname, name, value, old_value, debug_message=None):
-    global multi_story
+    global multi_story, koboldai_vars_main
     if serverstarted and name != "serverstarted":
         transmit_time = str(datetime.datetime.now())
         if debug_message is not None:
@@ -83,14 +85,20 @@ def process_variable_changes(socketio, classname, name, value, old_value, debug_
             else:
                 #If we got a variable change from a thread other than what the app is run it, eventlet seems to block and no further messages are sent. Instead, we'll rely the message to the app and have the main thread send it
                 if not has_request_context():
-                    data = ["var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, {"include_self":True, "broadcast":True, "room":room}]
+                    if not koboldai_vars_main.host or name not in password_vars:
+                        data = ["var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, {"include_self":True, "broadcast":True, "room":room}]
+                    else:
+                        data = ["var_changed", {"classname": classname, "name": name, "old_value": "*" * len(old_value) if old_value is not None else "", "value": "*" * len(value) if value is not None else "", "transmit_time": transmit_time}, {"include_self":True, "broadcast":True, "room":room}]
                     if queue is not None:
                         #logger.debug("Had to use queue")
                         queue.put(data)
                         
                 else:
                     if socketio is not None:
-                        socketio.emit("var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, include_self=True, broadcast=True, room=room)
+                        if not koboldai_vars_main.host or name not in password_vars:
+                            socketio.emit("var_changed", {"classname": classname, "name": name, "old_value": clean_var_for_emit(old_value), "value": clean_var_for_emit(value), "transmit_time": transmit_time}, include_self=True, broadcast=True, room=room)
+                        else:
+                            socketio.emit("var_changed", {"classname": classname, "name": name, "old_value":  "*" * len(old_value) if old_value is not None else "", "value": "*" * len(value) if value is not None else "", "transmit_time": transmit_time}, include_self=True, broadcast=True, room=room)
 
 class koboldai_vars(object):
     def __init__(self, socketio):
@@ -608,11 +616,16 @@ class settings(object):
                 if key == 'sampler_order':
                     if(len(value) < 7):
                         value = [6] + value
-                if key == 'autosave':
+                elif key == 'autosave':
                     autosave = value
+                elif key in ['worldinfo_u', 'wifolders_d']:
+                    # Fix UID keys to be ints
+                    value = {int(k): v for k, v in value.items()}
+
                 if isinstance(value, str):
                     if value[:7] == 'base64:':
                         value = pickle.loads(base64.b64decode(value[7:]))
+
                 #Need to fix the data type of value to match the module
                 if type(getattr(self, key)) == int:
                     setattr(self, key, int(value))
@@ -688,6 +701,7 @@ class model_settings(settings):
         self._koboldai_vars = koboldai_vars
         self.alt_multi_gen = False
         self.bit_8_available = None
+        self.use_default_badwordsids = True
         self.supported_gen_modes = []
         
     def reset_for_model_load(self):
@@ -1010,7 +1024,7 @@ class story_settings(settings):
                 new_world_info.add_item([x.strip() for x in wi["key"].split(",")][0], 
                                         wi["key"], 
                                         wi.get("keysecondary", ""), 
-                                        "root" if wi["folder"] is None else self.wifolders_d[str(wi['folder'])]['name'], 
+                                        "root" if wi["folder"] is None else self.wifolders_d[wi['folder']]['name'],
                                         wi.get("constant", False), 
                                         wi["content"], 
                                         wi.get("comment", ""), 
@@ -1345,38 +1359,40 @@ class system_settings(settings):
                 self._koboldai_var.calc_ai_text()
             
             if name == 'horde_share':
-                if self.on_colab == False:
-                    if os.path.exists("./KoboldAI-Horde-Bridge"):
-                        if value == True:
-                            if self._horde_pid is None:
-                                logger.info("Starting Horde bridge")
-                                bridge = importlib.import_module("KoboldAI-Horde-Bridge.bridge")
-                                self._horde_pid = bridge.kai_bridge()
-                                try:
-                                    bridge_cd = importlib.import_module("KoboldAI-Horde-Bridge.clientData")
-                                    cluster_url = bridge_cd.cluster_url
-                                    kai_name = bridge_cd.kai_name
-                                    if kai_name == "My Awesome Instance":
-                                        kai_name = f"KoboldAI UI Instance #{random.randint(-100000000, 100000000)}"
-                                    api_key = bridge_cd.api_key
-                                    priority_usernames = bridge_cd.priority_usernames
-                                except:
-                                    cluster_url = "https://horde.koboldai.net"
-                                    kai_name = self._koboldai_var.horde_worker_name
-                                    if kai_name == "My Awesome Instance":
-                                        kai_name = f"KoboldAI UI Instance #{random.randint(-100000000, 100000000)}"
-                                    api_key = self._koboldai_var.horde_api_key
-                                    priority_usernames = []
-                                # Always use the local URL & port
-                                kai_url = f'http://127.0.0.1:{self.port}'
+                if self.on_colab is True:
+                    return
+                if not os.path.exists("./AI-Horde-Worker"):
+                    return
+                if value is True:
+                    if self._horde_pid is None:
+                        self._horde_pid = "Pending" # Hack to make sure we don't launch twice while it loads
+                        logger.info("Starting Horde bridge")
+                        logger.debug("Clearing command line args in sys.argv before AI Horde Scribe load")
+                        sys_arg_bkp = sys.argv.copy()
+                        sys.argv = sys.argv[:1]
+                        bd_module = importlib.import_module("AI-Horde-Worker.worker.bridge_data.scribe")
+                        bridge_data = bd_module.KoboldAIBridgeData()
+                        sys.argv = sys_arg_bkp
+                        bridge_data.reload_data()
+                        bridge_data.kai_url = f'http://127.0.0.1:{self.port}'
+                        bridge_data.horde_url = self._koboldai_var.horde_url
+                        bridge_data.api_key = self._koboldai_var.horde_api_key
+                        bridge_data.scribe_name = self._koboldai_var.horde_worker_name
+                        bridge_data.disable_terminal_ui = self._koboldai_var.host
+                        if bridge_data.worker_name == "My Awesome Instance":
+                            bridge_data.worker_name = f"KoboldAI UI Instance #{random.randint(-100000000, 100000000)}"
+                        worker_module = importlib.import_module("AI-Horde-Worker.worker.workers.scribe")
+                        self._horde_pid = worker_module.ScribeWorker(bridge_data)
+                        new_thread = threading.Thread(target=self._horde_pid.start)
+                        new_thread.daemon = True
+                        new_thread.start()
 
-                                logger.info(f"Name: {kai_name} on {kai_url}")
-                                threading.Thread(target=self._horde_pid.bridge, args=(1, api_key, kai_name, kai_url, cluster_url, priority_usernames)).run()
-                        else:
-                            if self._horde_pid is not None:
-                                logger.info("Killing Horde bridge")
-                                self._horde_pid.stop()
-                                self._horde_pid = None
+                else:
+                    if self._horde_pid is not None:
+                        logger.info("Killing Horde bridge")
+                        self._horde_pid.stop()
+                        self._horde_pid = None
+
                 
 class KoboldStoryRegister(object):
     def __init__(self, socketio, story_settings, koboldai_vars, tokenizer=None, sequence=[]):
@@ -1766,7 +1782,7 @@ class KoboldStoryRegister(object):
         self.show_options(len(self.get_current_options()) > 1)
 
         if len(self.get_current_options()) == 1:
-            logger.warning("Going forward with this text: {}".format(self.get_current_options()[0]["text"]))
+            logger.debug("Going forward with this text: {}".format(self.get_current_options()[0]["text"]))
             self.use_option([x['text'] for x in self.actions[action_step]["Options"]].index(self.get_current_options()[0]["text"]))
 
     def use_option(self, option_number, action_step=None):
@@ -2551,7 +2567,7 @@ class KoboldWorldInfo(object):
                 with open(image_path, "wb") as file:
                     file.write(base64.b64decode(image_b64))
         
-        data["entries"] = {k: self.upgrade_entry(v) for k,v in data["entries"].items()}
+        data["entries"] = {int(k): self.upgrade_entry(v) for k,v in data["entries"].items()}
         
         #Add the item
         start_time = time.time()
@@ -2632,13 +2648,13 @@ class KoboldWorldInfo(object):
         self.story_settings.worldinfo.sort(key=lambda x: mapping[x["folder"]] if x["folder"] is not None else float("inf"))
         
         #self.wifolders_d = {}     # Dictionary of World Info folder UID-info pairs
-        self.story_settings.wifolders_d = {str(folder_entries[x]): {'name': x, 'collapsed': False} for x in folder_entries if x != "root"}
+        self.story_settings.wifolders_d = {folder_entries[x]: {'name': x, 'collapsed': False} for x in folder_entries if x != "root"}
         
         #self.worldinfo_u = {}     # Dictionary of World Info UID - key/value pairs
-        self.story_settings.worldinfo_u = {str(y["uid"]): y for x in folder_entries for y in self.story_settings.worldinfo if y["folder"] == (folder_entries[x] if x != "root" else None)}
+        self.story_settings.worldinfo_u = {y["uid"]: y for x in folder_entries for y in self.story_settings.worldinfo if y["folder"] == (folder_entries[x] if x != "root" else None)}
         
         #self.wifolders_u = {}     # Dictionary of pairs of folder UID - list of WI UID
-        self.story_settings.wifolders_u = {str(folder_entries[x]): [y for y in self.story_settings.worldinfo if y['folder'] == folder_entries[x]] for x in folder_entries if x != "root"}
+        self.story_settings.wifolders_u = {folder_entries[x]: [y for y in self.story_settings.worldinfo if y['folder'] == folder_entries[x]] for x in folder_entries if x != "root"}
         
     def reset_used_in_game(self):
         for key in self.world_info:

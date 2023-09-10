@@ -61,6 +61,11 @@ import gc
 import traceback
 
 import lupa
+# Hack to make the new Horde worker understand its imports...
+try:
+    sys.path.append(os.path.abspath("AI-Horde-Worker"))
+except:
+    pass
 
 # KoboldAI
 import fileops
@@ -69,6 +74,13 @@ from utils import debounce
 import utils
 import koboldai_settings
 import torch
+try:
+    import intel_extension_for_pytorch as ipex
+    if torch.xpu.is_available():
+        from modeling.ipex import ipex_init
+        ipex_init()
+except Exception:
+    pass
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, AutoModelForTokenClassification
 import transformers
 import ipaddress
@@ -242,11 +254,13 @@ model_menu = {
     "mainmenu": [
         MenuPath("Load a model from its directory", "NeoCustom"),
         MenuPath("Load an old GPT-2 model (eg CloverEdition)", "GPT2Custom"),
-        MenuModel("Load custom model from Hugging Face", "customhuggingface", ""),
-        MenuFolder("Adventure Models", "adventurelist"),
+        MenuModel("Load custom Pytorch model from Hugging Face", "customhuggingface", ""),
+        MenuModel("Load old GPTQ model from Hugging Face", "customgptq", "", model_backend="GPTQ"),
+        MenuFolder("Instruct Models", "instructlist"),
         MenuFolder("Novel Models", "novellist"),
         MenuFolder("Chat Models", "chatlist"),
         MenuFolder("NSFW Models", "nsfwlist"),
+        MenuFolder("Adventure Models", "adventurelist"),
         MenuFolder("Untuned OPT", "optlist"),
         MenuFolder("Untuned GPT-Neo/J", "gptneolist"),
         MenuFolder("Untuned Pythia", "pythialist"),
@@ -258,17 +272,28 @@ model_menu = {
         MenuFolder("Online Services", "apilist"),
         MenuModel("Read Only (No AI)", "ReadOnly", model_type=MenuModelType.OTHER, model_backend="Read Only"),
     ],
+    'instructlist': [
+        MenuModel("Holomax 13B", "KoboldAI/LLaMA2-13B-Holomax", "12GB*"),        
+        MenuModel("Mythomax 13B", "Gryphe/MythoMax-L2-13b", "12GB*"),
+        MenuModel("Chronos-Hermes V2 13B", "Austism/chronos-hermes-13b-v2", "12GB*"),
+        MenuModel("Legerdemain 13B", "CalderaAI/13B-Legerdemain-L2", "12GB*"),
+        MenuModel("Chronos 13b v2", "elinas/chronos-13b-v2", "12GB*"),  
+        MenuModel("Huginn 13B", "The-Face-Of-Goonery/Huginn-13b-FP16", "12GB*"),
+        MenuFolder("Return to Main Menu", "mainmenu"),
+        ],
     'adventurelist': [
-        MenuModel("Skein 20B", "KoboldAI/GPT-NeoX-20B-Skein", "64GB"),
-        MenuModel("Nerys OPT 13B V2 (Hybrid)", "KoboldAI/OPT-13B-Nerys-v2", "32GB"),
-        MenuModel("Nerys FSD 13B V2 (Hybrid)", "KoboldAI/fairseq-dense-13B-Nerys-v2", "32GB"),
-        MenuModel("Nerys FSD 13B (Hybrid)", "KoboldAI/fairseq-dense-13B-Nerys", "32GB"),
-        MenuModel("Skein 6B", "KoboldAI/GPT-J-6B-Skein", "16GB"),
-        MenuModel("OPT Nerys 6B V2 (Hybrid)", "KoboldAI/OPT-6B-nerys-v2", "16GB"),
-        MenuModel("Adventure 6B", "KoboldAI/GPT-J-6B-Adventure", "16GB"),
-        MenuModel("Nerys FSD 2.7B (Hybrid)", "KoboldAI/fairseq-dense-2.7B-Nerys", "8GB"),
-        MenuModel("Adventure 2.7B", "KoboldAI/GPT-Neo-2.7B-AID", "8GB"),
-        MenuModel("Adventure 1.3B", "KoboldAI/GPT-Neo-1.3B-Adventure", "6GB"),
+        MenuFolder("Instruct models may perform better than the models below (Using Instruct mode)", "instructlist"),
+        MenuModel("Skein 20B", "KoboldAI/GPT-NeoX-20B-Skein", "20GB*"),
+        MenuModel("Nerys OPT 13B V2 (Hybrid)", "KoboldAI/OPT-13B-Nerys-v2", "12GB"),
+        MenuModel("Spring Dragon 13B", "Henk717/spring-dragon", "12GB*"),
+        MenuModel("Nerys FSD 13B V2 (Hybrid)", "KoboldAI/fairseq-dense-13B-Nerys-v2", "12GB"),
+        MenuModel("Nerys FSD 13B (Hybrid)", "KoboldAI/fairseq-dense-13B-Nerys", "12GB"),
+        MenuModel("Skein 6B", "KoboldAI/GPT-J-6B-Skein", "8GB*"),
+        MenuModel("OPT Nerys 6B V2 (Hybrid)", "KoboldAI/OPT-6B-nerys-v2", "8GB"),
+        MenuModel("Adventure 6B", "KoboldAI/GPT-J-6B-Adventure", "8GB*"),
+        MenuModel("Nerys FSD 2.7B (Hybrid)", "KoboldAI/fairseq-dense-2.7B-Nerys", "6GB"),
+        MenuModel("Adventure 2.7B", "KoboldAI/GPT-Neo-2.7B-AID", "6GB"),
+        MenuModel("Adventure 1.3B", "KoboldAI/GPT-Neo-1.3B-Adventure", "4GB*"),
         MenuModel("Adventure 125M (Mia)", "Merry/AID-Neo-125M", "2GB"),
         MenuFolder("Return to Main Menu", "mainmenu"),
         ],
@@ -289,24 +314,31 @@ model_menu = {
         MenuFolder("Return to Main Menu", "mainmenu"),
         ],
     'nsfwlist': [
-        MenuModel("Erebus 20B (NSFW)", "KoboldAI/GPT-NeoX-20B-Erebus", "64GB"),
-        MenuModel("Nerybus 13B (NSFW)", "KoboldAI/OPT-13B-Nerybus-Mix", "32GB"),
-        MenuModel("Erebus 13B (NSFW)", "KoboldAI/OPT-13B-Erebus", "32GB"),
-        MenuModel("Shinen FSD 13B (NSFW)", "KoboldAI/fairseq-dense-13B-Shinen", "32GB"),
-        MenuModel("Erebus 6.7B (NSFW)", "KoboldAI/OPT-6.7B-Erebus", "16GB"),
-        MenuModel("Shinen FSD 6.7B (NSFW)", "KoboldAI/fairseq-dense-6.7B-Shinen", "16GB"),
-        MenuModel("Lit V2 6B (NSFW)", "hakurei/litv2-6B-rev3", "16GB"),
-        MenuModel("Lit 6B (NSFW)", "hakurei/lit-6B", "16GB"),
-        MenuModel("Shinen 6B (NSFW)", "KoboldAI/GPT-J-6B-Shinen", "16GB"),
-        MenuModel("Erebus 2.7B (NSFW)", "KoboldAI/OPT-2.7B-Erebus", "8GB"),
-        MenuModel("Horni 2.7B (NSFW)", "KoboldAI/GPT-Neo-2.7B-Horni", "8GB"),
-        MenuModel("Shinen 2.7B (NSFW)", "KoboldAI/GPT-Neo-2.7B-Shinen", "8GB"),
+        MenuFolder("Looking for NSFW Chat RP? Most chat models give better replies", "chatlist"),
+        MenuModel("Green Devil (Novel)", "Pirr/pythia-13b-deduped-green_devil", "14GB"),
+        MenuModel("Erebus 20B (Novel)", "KoboldAI/GPT-NeoX-20B-Erebus", "20GB*"),
+        MenuModel("Nerybus 13B (Novel)", "KoboldAI/OPT-13B-Nerybus-Mix", "12GB"),
+        MenuModel("Erebus 13B (Novel)", "KoboldAI/OPT-13B-Erebus", "12GB"),
+        MenuModel("Shinen FSD 13B (Novel)", "KoboldAI/fairseq-dense-13B-Shinen", "12GB"),
+        MenuModel("Erebus 6.7B (Novel)", "KoboldAI/OPT-6.7B-Erebus", "8GB"),
+        MenuModel("Shinen FSD 6.7B (Novel)", "KoboldAI/fairseq-dense-6.7B-Shinen", "8GB"),
+        MenuModel("Lit V2 6B (Novel)", "hakurei/litv2-6B-rev3", "8GB*"),
+        MenuModel("Lit 6B (Novel)", "hakurei/lit-6B", "8GB*"),
+        MenuModel("Shinen 6B (Novel)", "KoboldAI/GPT-J-6B-Shinen", "6GB"),
+        MenuModel("Erebus 2.7B (Novel)", "KoboldAI/OPT-2.7B-Erebus", "6GB"),
+        MenuModel("Horni 2.7B (Novel)", "KoboldAI/GPT-Neo-2.7B-Horni", "6GB"),
+        MenuModel("Shinen 2.7B (Novel)", "KoboldAI/GPT-Neo-2.7B-Shinen", "6GB"),
         MenuFolder("Return to Main Menu", "mainmenu"),
         ],
     'chatlist': [
-        MenuModel("Pygmalion 6B", "PygmalionAI/pygmalion-6b", "16GB"),
-        MenuModel("Pygmalion 2.7B", "PygmalionAI/pygmalion-2.7b", "8GB"),
-        MenuModel("Pygmalion 1.3B", "PygmalionAI/pygmalion-1.3b", "6GB"),
+        MenuModel("Pygmalion-2 13B", "PygmalionAI/pygmalion-2-13b", "12GB*"),
+        MenuModel("Mythalion 13B", "PygmalionAI/mythalion-13b", "12GB*"),
+        MenuModel("Mythomax 13B (Instruct)", "Gryphe/MythoMax-L2-13b", "12GB*"),
+        MenuModel("Huginn 13B (Instruct)", "The-Face-Of-Goonery/Huginn-13b-FP16", "12GB*"),
+        MenuModel("Pygmalion-2 7B", "PygmalionAI/pygmalion-2-7b", "8GB*"),
+        MenuModel("Pygmalion 6B", "PygmalionAI/pygmalion-6b", "8GB*"),
+        MenuModel("Pygmalion 2.7B", "PygmalionAI/pygmalion-2.7b", "6GB"),
+        MenuModel("Pygmalion 1.3B", "PygmalionAI/pygmalion-1.3b", "4GB*"),
         MenuModel("Pygmalion 350M", "PygmalionAI/pygmalion-350m", "2GB"),
         MenuFolder("Return to Main Menu", "mainmenu"),
         ],
@@ -625,6 +657,7 @@ logger.add(UI_2_log_history, serialize=True, colorize=True, enqueue=True, level=
 
 #logger.add("log_file_1.log", rotation="500 MB")    # Automatically rotate too big file
 koboldai_vars = koboldai_settings.koboldai_vars(socketio)
+koboldai_settings.koboldai_vars_main = koboldai_vars
 utils.koboldai_vars = koboldai_vars
 utils.socketio = socketio
 
@@ -908,7 +941,7 @@ tags = [
 api_version = None  # This gets set automatically so don't change this value
 
 api_v1 = KoboldAPISpec(
-    version="1.2.3",
+    version="1.2.5",
     prefixes=["/api/v1", "/api/latest"],
     tags=tags,
 )
@@ -1114,7 +1147,7 @@ def loadmodelsettings():
             try:
                 js   = json.load(open(koboldai_vars.custmodpth + "/config.json", "r"))
             except Exception as e:
-                js   = json.load(open(koboldai_vars.custmodpth.replace('/', '_') + "/config.json", "r"))            
+                js   = json.load(open(koboldai_vars.custmodpth.replace('/', '_') + "/config.json", "r"))
         except Exception as e:
             js   = {}
     koboldai_vars.default_preset = koboldai_settings.default_preset
@@ -1702,11 +1735,7 @@ def load_model(model_backend, initial_load=False):
     if koboldai_vars.model != 'ReadOnly':
         emit('from_server', {'cmd': 'model_load_status', 'data': "Loading {}".format(model_backends[model_backend].model_name if "model_name" in vars(model_backends[model_backend]) else model_backends[model_backend].id)}, broadcast=True)
         #Have to add a sleep so the server will send the emit for some reason
-        time.sleep(0.1)
-
-    if 'model' in globals():
-        model.unload()
-    
+        time.sleep(0.1)    
     
     # If transformers model was selected & GPU available, ask to use CPU or GPU
     if(not koboldai_vars.use_colab_tpu and koboldai_vars.model not in ["InferKit", "Colab", "API", "CLUSTER", "OAI", "GooseAI" , "ReadOnly", "TPUMeshTransformerGPTJ", "TPUMeshTransformerGPTNeoX"]):
@@ -2839,7 +2868,7 @@ def get_message(msg):
         emit('from_server', {'cmd': 'wiupdate', 'num': msg['num'], 'data': {field: koboldai_vars.worldinfo[num][field] for field in fields}}, broadcast=True, room="UI_1")
     elif(msg['cmd'] == 'wifolderupdate'):
         setgamesaved(False)
-        uid = str(msg['uid'])
+        uid = msg['uid']
         fields = ("name", "collapsed")
         for field in fields:
             if(field in msg['data'] and type(msg['data'][field]) is (str if field != "collapsed" else bool)):
@@ -3247,19 +3276,19 @@ def actionsubmit(
                 try:
                     if(os.path.isdir(tokenizer_id)):
                         try:
-                            tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache")
-                        except:
                             tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache", use_fast=False)
+                        except:
+                            tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache")
                     elif(os.path.isdir("models/{}".format(tokenizer_id.replace('/', '_')))):
                         try:
-                            tokenizer = AutoTokenizer.from_pretrained("models/{}".format(tokenizer_id.replace('/', '_')), revision=koboldai_vars.revision, cache_dir="cache")
-                        except:
                             tokenizer = AutoTokenizer.from_pretrained("models/{}".format(tokenizer_id.replace('/', '_')), revision=koboldai_vars.revision, cache_dir="cache", use_fast=False)
+                        except:
+                            tokenizer = AutoTokenizer.from_pretrained("models/{}".format(tokenizer_id.replace('/', '_')), revision=koboldai_vars.revision, cache_dir="cache")
                     else:
                         try:
-                            tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache")
-                        except:
                             tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache", use_fast=False)
+                        except:
+                            tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, revision=koboldai_vars.revision, cache_dir="cache")
                 except:
                     logger.warning(f"Unknown tokenizer {repr(tokenizer_id)}")
                 koboldai_vars.api_tokenizer_id = tokenizer_id
@@ -3896,7 +3925,8 @@ def generate(txt, minimum, maximum, found_entries=None, gen_mode=GenerationMode.
         return
 
     for i in range(koboldai_vars.numseqs):
-        koboldai_vars.lua_koboldbridge.generated[i+1][koboldai_vars.generated_tkns] = int(genout[i, -1].item())
+        if len(genout[i]) > 0:
+            koboldai_vars.lua_koboldbridge.generated[i+1][koboldai_vars.generated_tkns] = int(genout[i, -1].item())
         koboldai_vars.lua_koboldbridge.outputs[i+1] = utils.decodenewlines(tokenizer.decode(genout[i, -already_generated:]))
 
     execute_outmod()
@@ -4287,17 +4317,17 @@ def togglewimode():
 #   
 #==================================================================#
 def addwiitem(folder_uid=None):
-    assert folder_uid is None or str(folder_uid) in koboldai_vars.wifolders_d
+    assert folder_uid is None or folder_uid in koboldai_vars.wifolders_d
     ob = {"key": "", "keysecondary": "", "content": "", "comment": "", "folder": folder_uid, "num": len(koboldai_vars.worldinfo), "init": False, "selective": False, "constant": False}
     koboldai_vars.worldinfo.append(ob)
     while(True):
-        uid = str(int.from_bytes(os.urandom(4), "little", signed=True))
+        uid = int.from_bytes(os.urandom(4), "little", signed=True)
         if(uid not in koboldai_vars.worldinfo_u):
             break
     koboldai_vars.worldinfo_u[uid] = koboldai_vars.worldinfo[-1]
     koboldai_vars.worldinfo[-1]["uid"] = uid
     if(folder_uid is not None):
-        koboldai_vars.wifolders_u[str(folder_uid)].append(koboldai_vars.worldinfo[-1])
+        koboldai_vars.wifolders_u[folder_uid].append(koboldai_vars.worldinfo[-1])
     emit('from_server', {'cmd': 'addwiitem', 'data': ob}, broadcast=True, room="UI_1")
 
 #==================================================================#
@@ -4305,7 +4335,7 @@ def addwiitem(folder_uid=None):
 #==================================================================#
 def addwifolder():
     while(True):
-        uid = str(int.from_bytes(os.urandom(4), "little", signed=True))
+        uid = int.from_bytes(os.urandom(4), "little", signed=True)
         if(uid not in koboldai_vars.wifolders_d):
             break
     ob = {"name": "", "collapsed": False}
@@ -4321,18 +4351,18 @@ def addwifolder():
 #==================================================================#
 def movewiitem(dst, src):
     setgamesaved(False)
-    if(koboldai_vars.worldinfo_u[str(src)]["folder"] is not None):
-        for i, e in enumerate(koboldai_vars.wifolders_u[str(koboldai_vars.worldinfo_u[str(src)]["folder"])]):
-            if(e["uid"] == koboldai_vars.worldinfo_u[str(src)]["uid"]):
-                koboldai_vars.wifolders_u[str(koboldai_vars.worldinfo_u[str(src)]["folder"])].pop(i)
+    if(koboldai_vars.worldinfo_u[src]["folder"] is not None):
+        for i, e in enumerate(koboldai_vars.wifolders_u[koboldai_vars.worldinfo_u[src]["folder"]]):
+            if(e["uid"] == koboldai_vars.worldinfo_u[src]["uid"]):
+                koboldai_vars.wifolders_u[koboldai_vars.worldinfo_u[src]["folder"]].pop(i)
                 break
-    if(koboldai_vars.worldinfo_u[str(dst)]["folder"] is not None):
-        koboldai_vars.wifolders_u[str(koboldai_vars.worldinfo_u[str(dst)]["folder"])].append(koboldai_vars.worldinfo_u[str(src)])
-    koboldai_vars.worldinfo_u[str(src)]["folder"] = koboldai_vars.worldinfo_u[str(dst)]["folder"]
+    if(koboldai_vars.worldinfo_u[dst]["folder"] is not None):
+        koboldai_vars.wifolders_u[koboldai_vars.worldinfo_u[dst]["folder"]].append(koboldai_vars.worldinfo_u[src])
+    koboldai_vars.worldinfo_u[src]["folder"] = koboldai_vars.worldinfo_u[dst]["folder"]
     for i, e in enumerate(koboldai_vars.worldinfo):
-        if(e["uid"] == koboldai_vars.worldinfo_u[str(src)]["uid"]):
+        if(e["uid"] == koboldai_vars.worldinfo_u[src]["uid"]):
             _src = i
-        elif(e["uid"] == koboldai_vars.worldinfo_u[str(dst)]["uid"]):
+        elif(e["uid"] == koboldai_vars.worldinfo_u[dst]["uid"]):
             _dst = i
     koboldai_vars.worldinfo[_src]["folder"] = koboldai_vars.worldinfo[_dst]["folder"]
     koboldai_vars.worldinfo.insert(_dst - (_dst >= _src), koboldai_vars.worldinfo.pop(_src))
@@ -4344,12 +4374,12 @@ def movewiitem(dst, src):
 #==================================================================#
 def movewifolder(dst, src):
     setgamesaved(False)
-    koboldai_vars.wifolders_l.remove(str(src))
+    koboldai_vars.wifolders_l.remove(src)
     if(dst is None):
         # If dst is None, that means we should move src to be the last folder
-        koboldai_vars.wifolders_l.append(str(src))
+        koboldai_vars.wifolders_l.append(src)
     else:
-        koboldai_vars.wifolders_l.insert(koboldai_vars.wifolders_l.index(str(dst)), str(src))
+        koboldai_vars.wifolders_l.insert(koboldai_vars.wifolders_l.index(dst), src)
     sendwi()
 
 #==================================================================#
@@ -4375,7 +4405,7 @@ def sendwi():
         last_folder = ...
         for wi in koboldai_vars.worldinfo:
             if(wi["folder"] != last_folder):
-                emit('from_server', {'cmd': 'addwifolder', 'uid': wi["folder"], 'data': koboldai_vars.wifolders_d[str(wi["folder"])] if wi["folder"] is not None else None}, broadcast=True, room="UI_1")
+                emit('from_server', {'cmd': 'addwifolder', 'uid': wi["folder"], 'data': koboldai_vars.wifolders_d[wi["folder"]] if wi["folder"] is not None else None}, broadcast=True, room="UI_1")
                 last_folder = wi["folder"]
             ob = wi
             emit('from_server', {'cmd': 'addwiitem', 'data': ob}, broadcast=True, room="UI_1")
@@ -4396,8 +4426,8 @@ def requestwi():
 #  and items in different folders are sorted based on the order of the folders
 #==================================================================#
 def stablesortwi():
-    mapping = {int(uid): index for index, uid in enumerate(koboldai_vars.wifolders_l)}
-    koboldai_vars.worldinfo.sort(key=lambda x: mapping[int(x["folder"])] if x["folder"] is not None else float("inf"))
+    mapping = {uid: index for index, uid in enumerate(koboldai_vars.wifolders_l)}
+    koboldai_vars.worldinfo.sort(key=lambda x: mapping[x["folder"]] if x["folder"] is not None else float("inf"))
     last_folder = ...
     last_wi = None
     for i, wi in enumerate(koboldai_vars.worldinfo):
@@ -4418,7 +4448,6 @@ def stablesortwi():
 #==================================================================#
 def commitwi(ar):
     for ob in ar:
-        ob["uid"] = str(ob["uid"])
         koboldai_vars.worldinfo_u[ob["uid"]]["key"]          = ob["key"]
         koboldai_vars.worldinfo_u[ob["uid"]]["keysecondary"] = ob["keysecondary"]
         koboldai_vars.worldinfo_u[ob["uid"]]["content"]      = ob["content"]
@@ -4441,9 +4470,9 @@ def deletewi(uid):
         koboldai_vars.deletewi = uid
         if(koboldai_vars.deletewi is not None):
             if(koboldai_vars.worldinfo_u[koboldai_vars.deletewi]["folder"] is not None):
-                for i, e in enumerate(koboldai_vars.wifolders_u[str(koboldai_vars.worldinfo_u[koboldai_vars.deletewi]["folder"])]):
+                for i, e in enumerate(koboldai_vars.wifolders_u[koboldai_vars.worldinfo_u[koboldai_vars.deletewi]["folder"]]):
                     if(e["uid"] == koboldai_vars.worldinfo_u[koboldai_vars.deletewi]["uid"]):
-                        koboldai_vars.wifolders_u[str(koboldai_vars.worldinfo_u[koboldai_vars.deletewi]["folder"])].pop(i)
+                        koboldai_vars.wifolders_u[koboldai_vars.worldinfo_u[koboldai_vars.deletewi]["folder"]].pop(i)
                         break
             for i, e in enumerate(koboldai_vars.worldinfo):
                 if(e["uid"] == koboldai_vars.worldinfo_u[koboldai_vars.deletewi]["uid"]):
@@ -4459,18 +4488,17 @@ def deletewi(uid):
 #  
 #==================================================================#
 def deletewifolder(uid):
-    uid = str(uid)
     del koboldai_vars.wifolders_u[uid]
     del koboldai_vars.wifolders_d[uid]
     del koboldai_vars.wifolders_l[koboldai_vars.wifolders_l.index(uid)]
     setgamesaved(False)
     # Delete uninitialized entries in the folder we're going to delete
-    koboldai_vars.worldinfo = [wi for wi in koboldai_vars.worldinfo if str(wi["folder"]) != uid or wi["init"]]
+    koboldai_vars.worldinfo = [wi for wi in koboldai_vars.worldinfo if wi["folder"] != uid or wi["init"]]
     koboldai_vars.worldinfo_i = [wi for wi in koboldai_vars.worldinfo if wi["init"]]
     # Move WI entries that are inside of the folder we're going to delete
     # so that they're outside of all folders
     for wi in koboldai_vars.worldinfo:
-        if(str(wi["folder"]) == uid):
+        if(wi["folder"] == uid):
             wi["folder"] = None
 
     sendwi()
@@ -6305,6 +6333,9 @@ def UI_2_resubmit_model_info(data):
 @socketio.on('load_model')
 @logger.catch
 def UI_2_load_model(data):
+    logger.debug("Unloading previous model")
+    if 'model' in globals():
+        model.unload()
     logger.debug("Loading model with user input of: {}".format(data))
     model_backends[data['plugin']].set_input_parameters(data)
     load_model(data['plugin'])
@@ -6550,7 +6581,7 @@ def UI_2_create_world_info_folder(data):
 @socketio.on('delete_world_info')
 @logger.catch
 def UI_2_delete_world_info(uid):
-    koboldai_vars.worldinfo_v2.delete(int(uid))
+    koboldai_vars.worldinfo_v2.delete(uid)
 
 
 #==================================================================#
@@ -6605,7 +6636,7 @@ def UI_2_import_world_info():
         for child in children:
             # Child is index
             if child not in uids:
-                entry_data = wi_data["entries"][str(child)]
+                entry_data = wi_data["entries"][child]
                 uids[child] = koboldai_vars.worldinfo_v2.add_item(
                     title=entry_data["title"],
                     key=entry_data["key"],
@@ -7325,7 +7356,7 @@ def generate_image(prompt: str) -> Optional[Image.Image]:
     if koboldai_vars.img_gen_priority == 4:
         # Check if stable-diffusion-webui API option selected and use that if found.
         return text2img_api(prompt)
-    elif ((not koboldai_vars.hascuda or not os.path.exists("functional_models/stable-diffusion")) and koboldai_vars.img_gen_priority != 0) or  koboldai_vars.img_gen_priority == 3:
+    elif ((not koboldai_vars.hascuda or not os.path.exists("functional_models/stable-diffusion/model_index.json")) and koboldai_vars.img_gen_priority != 0) or koboldai_vars.img_gen_priority == 3:
         # If we don't have a GPU, use horde if we're allowed to
         return text2img_horde(prompt)
 
@@ -7351,7 +7382,10 @@ def text2img_local(prompt: str) -> Optional[Image.Image]:
     logger.debug("Generating Image")
     from diffusers import StableDiffusionPipeline
     if koboldai_vars.image_pipeline is None:
-        pipe = tpool.execute(StableDiffusionPipeline.from_pretrained, "XpucT/Deliberate", safety_checker=None, torch_dtype=torch.float16, cache="functional_models/stable-diffusion").to("cuda")
+        if not os.path.exists("functional_models/stable-diffusion/model_index.json"):
+            from huggingface_hub import snapshot_download
+            snapshot_download("XpucT/Deliberate", local_dir="functional_models/stable-diffusion", local_dir_use_symlinks=False, cache_dir="cache/", ignore_patterns=["*.safetensors"])
+        pipe = tpool.execute(StableDiffusionPipeline.from_pretrained, "functional_models/stable-diffusion", safety_checker=None, torch_dtype=torch.float16).to("cuda")
     else:
         pipe = koboldai_vars.image_pipeline.to("cuda")
     logger.debug("time to load: {}".format(time.time() - start_time))
@@ -7708,7 +7742,6 @@ def maybe_review_story() -> None:
     for uid, wi in koboldai_vars.worldinfo_v2.world_info.items():
         if wi["type"] == "commentator":
             continue
-        uid = int(uid)
         allowed_wi_uids.append(uid)
 
     prompt = f"\n\n{speaker_name}'s thoughts on what just happened in this story: \""
@@ -7963,7 +7996,7 @@ def model_info():
 @require_allowed_ip
 @logger.catch
 def show_vars():
-    if args.no_ui:
+    if args.no_ui or koboldai_vars.host:
         return redirect('/api/latest')
     json_data = {}
     json_data['story_settings'] = json.loads(koboldai_vars.to_json("story_settings"))
@@ -8127,6 +8160,8 @@ def permutation_validator(lst: list):
     return True
 
 class GenerationInputSchema(SamplerSettingsSchema):
+    class Meta:
+        unknown = EXCLUDE # Doing it on this level is not a deliberate design choice on our part, it doesn't work nested... - Henk
     prompt: str = fields.String(required=True, metadata={"description": "This is the submission."})
     use_memory: bool = fields.Boolean(load_default=False, metadata={"description": "Whether or not to use the memory from the KoboldAI GUI when generating text."})
     use_story: bool = fields.Boolean(load_default=False, metadata={"description": "Whether or not to use the story from the KoboldAI GUI when generating text."})
@@ -8134,7 +8169,7 @@ class GenerationInputSchema(SamplerSettingsSchema):
     use_world_info: bool = fields.Boolean(load_default=False, metadata={"description": "Whether or not to use the world info from the KoboldAI GUI when generating text."})
     use_userscripts: bool = fields.Boolean(load_default=False, metadata={"description": "Whether or not to use the userscripts from the KoboldAI GUI when generating text."})
     soft_prompt: Optional[str] = fields.String(metadata={"description": "Soft prompt to use when generating. If set to the empty string or any other string containing no non-whitespace characters, uses no soft prompt."}, validate=[soft_prompt_validator, validate.Regexp(r"^[^/\\]*$")])
-    max_length: int = fields.Integer(validate=validate.Range(min=1, max=512), metadata={"description": "Number of tokens to generate."})
+    max_length: int = fields.Integer(validate=validate.Range(min=1), metadata={"description": "Number of tokens to generate."})
     max_context_length: int = fields.Integer(validate=validate.Range(min=1), metadata={"description": "Maximum number of tokens to send to the model."})
     n: int = fields.Integer(validate=validate.Range(min=1, max=5), metadata={"description": "Number of outputs to generate."})
     disable_output_formatting: bool = fields.Boolean(load_default=True, metadata={"description": "When enabled, all output formatting options default to `false` instead of the value in the KoboldAI GUI."})
@@ -8142,13 +8177,15 @@ class GenerationInputSchema(SamplerSettingsSchema):
     frmtrmblln: Optional[bool] = fields.Boolean(metadata={"description": "Output formatting option. When enabled, replaces all occurrences of two or more consecutive newlines in the output with one newline.\n\nIf `disable_output_formatting` is `true`, this defaults to `false` instead of the value in the KoboldAI GUI."})
     frmtrmspch: Optional[bool] = fields.Boolean(metadata={"description": "Output formatting option. When enabled, removes `#/@%{}+=~|\^<>` from the output.\n\nIf `disable_output_formatting` is `true`, this defaults to `false` instead of the value in the KoboldAI GUI."})
     singleline: Optional[bool] = fields.Boolean(metadata={"description": "Output formatting option. When enabled, removes everything after the first line of the output, including the newline.\n\nIf `disable_output_formatting` is `true`, this defaults to `false` instead of the value in the KoboldAI GUI."})
+    use_default_badwordsids: bool = fields.Boolean(load_default=True, metadata={"description": "Ban tokens that commonly worsen the writing experience for continuous story writing"})
     disable_input_formatting: bool = fields.Boolean(load_default=True, metadata={"description": "When enabled, all input formatting options default to `false` instead of the value in the KoboldAI GUI"})
     frmtadsnsp: Optional[bool] = fields.Boolean(metadata={"description": "Input formatting option. When enabled, adds a leading space to your input if there is no trailing whitespace at the end of the previous action.\n\nIf `disable_input_formatting` is `true`, this defaults to `false` instead of the value in the KoboldAI GUI."})
     quiet: Optional[bool] = fields.Boolean(metadata={"description": "When enabled, Generated output will not be displayed in the console."})
     sampler_order: Optional[List[int]] = fields.List(fields.Integer(), validate=[validate.Length(min=6), permutation_validator], metadata={"description": "Sampler order to be used. If N is the length of this array, then N must be greater than or equal to 6 and the array must be a permutation of the first N non-negative integers."})
     sampler_seed: Optional[int] = fields.Integer(validate=validate.Range(min=0, max=2**64 - 1), metadata={"description": "RNG seed to use for sampling. If not specified, the global RNG will be used."})
     sampler_full_determinism: Optional[bool] = fields.Boolean(metadata={"description": "If enabled, the generated text will always be the same as long as you use the same RNG seed, input and settings. If disabled, only the *sequence* of generated texts that you get when repeatedly generating text will be the same given the same RNG seed, input and settings."})
-    stop_sequence: Optional[List[str]] = fields.List(fields.String(),metadata={"description": "An array of string sequences where the API will stop generating further tokens. The returned text WILL contain the stop sequence."}, validate=[validate.Length(max=10)])
+    stop_sequence: Optional[List[str]] = fields.List(fields.String(),metadata={"description": "An array of string sequences where the API will stop generating further tokens. The returned text WILL contain the stop sequence."})
+
 
 class GenerationResultSchema(KoboldSchema):
     text: str = fields.String(required=True, metadata={"description": "Generated output as plain text."})
@@ -8292,6 +8329,7 @@ def _generate_text(body: GenerationInputSchema):
         "sampler_order": ("koboldai_vars", "sampler_order", None),
         "sampler_full_determinism": ("koboldai_vars", "full_determinism", None),
         "stop_sequence": ("koboldai_vars", "stop_sequence", None),
+        "use_default_badwordsids": ("koboldai_vars", "use_default_badwordsids", None),
     }
     saved_settings = {}
     set_aibusy(1)
@@ -8529,6 +8567,8 @@ def put_model(body: ModelSelectionSchema):
             backend = "Huggingface"
 
     try:
+        if 'model' in globals():
+            model.unload()
         load_model(backend)
     except Exception as e:
         koboldai_vars.model = old_model
@@ -9209,7 +9249,7 @@ def get_world_info():
             if wi["folder"] != last_folder:
                 folder = []
                 if wi["folder"] is not None:
-                    folders.append({"uid": wi["folder"], "name": koboldai_vars.wifolders_d[str(wi["folder"])]["name"], "entries": folder})
+                    folders.append({"uid": wi["folder"], "name": koboldai_vars.wifolders_d[wi["folder"]]["name"], "entries": folder})
                 last_folder = wi["folder"]
             (folder if wi["folder"] is not None else entries).append({k: v for k, v in wi.items() if k not in ("init", "folder", "num") and (wi["selective"] or k != "keysecondary")})
     return {"folders": folders, "entries": entries}
