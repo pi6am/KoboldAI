@@ -273,6 +273,7 @@ model_menu = {
         MenuModel("Read Only (No AI)", "ReadOnly", model_type=MenuModelType.OTHER, model_backend="Read Only"),
     ],
     'instructlist': [
+        MenuModel("Tiefighter 13B", "KoboldAI/LLaMA2-13B-Tiefighter", "12GB*"),   
         MenuModel("Holomax 13B", "KoboldAI/LLaMA2-13B-Holomax", "12GB*"),        
         MenuModel("Mythomax 13B", "Gryphe/MythoMax-L2-13b", "12GB*"),
         MenuModel("Chronos-Hermes V2 13B", "Austism/chronos-hermes-13b-v2", "12GB*"),
@@ -283,6 +284,7 @@ model_menu = {
         ],
     'adventurelist': [
         MenuFolder("Instruct models may perform better than the models below (Using Instruct mode)", "instructlist"),
+        MenuModel("Tiefighter 13B (Instruct Hybrid)", "KoboldAI/LLaMA2-13B-Tiefighter", "12GB*"),
         MenuModel("Skein 20B", "KoboldAI/GPT-NeoX-20B-Skein", "20GB*"),
         MenuModel("Nerys OPT 13B V2 (Hybrid)", "KoboldAI/OPT-13B-Nerys-v2", "12GB"),
         MenuModel("Spring Dragon 13B", "Henk717/spring-dragon", "12GB*"),
@@ -298,6 +300,7 @@ model_menu = {
         MenuFolder("Return to Main Menu", "mainmenu"),
         ],
     'novellist': [
+        MenuModel("Tiefighter 13B (Instruct Hybrid)", "KoboldAI/LLaMA2-13B-Tiefighter", "12GB*"),
         MenuModel("Nerys OPT 13B V2 (Hybrid)", "KoboldAI/OPT-13B-Nerys-v2", "32GB"),
         MenuModel("Nerys FSD 13B V2 (Hybrid)", "KoboldAI/fairseq-dense-13B-Nerys-v2", "32GB"),
         MenuModel("Janeway FSD 13B", "KoboldAI/fairseq-dense-13B-Janeway", "32GB"),
@@ -941,7 +944,7 @@ tags = [
 api_version = None  # This gets set automatically so don't change this value
 
 api_v1 = KoboldAPISpec(
-    version="1.2.5",
+    version="1.2.6",
     prefixes=["/api/v1", "/api/latest"],
     tags=tags,
 )
@@ -7382,7 +7385,7 @@ def text2img_local(prompt: str) -> Optional[Image.Image]:
     if koboldai_vars.image_pipeline is None:
         if not os.path.exists("functional_models/stable-diffusion/model_index.json"):
             from huggingface_hub import snapshot_download
-            snapshot_download("XpucT/Deliberate", local_dir="functional_models/stable-diffusion", local_dir_use_symlinks=False, cache_dir="cache/", ignore_patterns=["*.safetensors"])
+            snapshot_download("peterwilli/deliberate-2", local_dir="functional_models/stable-diffusion", local_dir_use_symlinks=False, cache_dir="cache/", ignore_patterns=["*.safetensors"])
         pipe = tpool.execute(StableDiffusionPipeline.from_pretrained, "functional_models/stable-diffusion", safety_checker=None, torch_dtype=torch.float16).to("cuda")
     else:
         pipe = koboldai_vars.image_pipeline.to("cuda")
@@ -7585,6 +7588,19 @@ def text2img_api(prompt, art_guide="") -> Image.Image:
 def UI2_clear_generated_image(data):
     koboldai_vars.picture = ""
     koboldai_vars.picture_prompt = ""
+
+#==================================================================#
+# Retrieve previous images
+#==================================================================#
+@socketio.on("get_story_image")
+@logger.catch
+def UI_2_get_story_image(data):
+    action_id = data['action_id']
+    (filename, prompt) = koboldai_vars.actions.get_picture(action_id)
+    print(filename)
+    if filename is not None:
+        with open(filename, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode("utf-8") 
 
 #@logger.catch
 def get_items_locations_from_text(text):
@@ -7921,10 +7937,70 @@ def UI_2_audio():
         start_time = time.time()
         while not os.path.exists(filename) and time.time()-start_time < 60: #Waiting up to 60 seconds for the file to be generated
             time.sleep(0.1)
-    return send_file(
-             filename, 
-             mimetype="audio/ogg")
+    if os.path.exists(filename):
+        return send_file(
+                filename, 
+                mimetype="audio/ogg")
+    show_error_notification("Error generating audio chunk", f"Something happened. Maybe check the log?")
 
+#==================================================================#
+# Download complete audio file
+#==================================================================#
+@socketio.on("gen_full_audio")
+def UI_2_gen_full_audio(data):
+    from pydub import AudioSegment
+    if args.no_ui:
+        return redirect('/api/latest')
+    
+    logger.info("Generating complete audio file")
+    combined_audio = None
+    complete_filename = os.path.join(koboldai_vars.save_paths.generated_audio, "complete.ogg")
+    for action_id in range(-1, koboldai_vars.actions.action_count+1):
+        filename = os.path.join(koboldai_vars.save_paths.generated_audio, f"{action_id}.ogg")
+        filename_slow = os.path.join(koboldai_vars.save_paths.generated_audio, f"{action_id}_slow.ogg")
+        
+        
+        if os.path.exists(filename_slow):
+            if combined_audio is None:
+                combined_audio = AudioSegment.from_file(filename_slow, format="ogg")
+            else:
+                combined_audio = combined_audio + AudioSegment.from_file(filename_slow, format="ogg")
+        elif os.path.exists(filename):
+            if combined_audio is None:
+                combined_audio = AudioSegment.from_file(filename, format="ogg")
+            else:
+                combined_audio = combined_audio + AudioSegment.from_file(filename, format="ogg")
+        else:
+            logger.info("Action {} has no audio. Generating now".format(action_id))
+            koboldai_vars.actions.gen_audio(action_id)
+            while not os.path.exists(filename) and time.time()-start_time < 60: #Waiting up to 60 seconds for the file to be generated
+                time.sleep(0.1)
+            if os.path.exists(filename):
+                if combined_audio is None:
+                    combined_audio = AudioSegment.from_file(filename, format="ogg")
+                else:
+                    combined_audio = combined_audio + AudioSegment.from_file(filename, format="ogg")
+            else:
+                show_error_notification("Error generating audio chunk", f"Something happened. Maybe check the log?")
+        
+    logger.info("Sending audio file")
+    file_handle = combined_audio.export(complete_filename, format="ogg")
+    return True
+    
+
+@app.route("/audio_full")
+@require_allowed_ip
+@logger.catch
+def UI_2_audio_full():
+    logger.info("Downloading complete audio file")
+    complete_filename = os.path.join(koboldai_vars.save_paths.generated_audio, "complete.ogg")
+    if os.path.exists(complete_filename):
+        return send_file(
+                 complete_filename, 
+                 as_attachment=True,
+                 download_name = koboldai_vars.story_name,
+                 mimetype="audio/ogg")
+             
 
 #==================================================================#
 # Download of the image for an action
@@ -8175,7 +8251,7 @@ class GenerationInputSchema(SamplerSettingsSchema):
     frmtrmblln: Optional[bool] = fields.Boolean(metadata={"description": "Output formatting option. When enabled, replaces all occurrences of two or more consecutive newlines in the output with one newline.\n\nIf `disable_output_formatting` is `true`, this defaults to `false` instead of the value in the KoboldAI GUI."})
     frmtrmspch: Optional[bool] = fields.Boolean(metadata={"description": "Output formatting option. When enabled, removes `#/@%{}+=~|\^<>` from the output.\n\nIf `disable_output_formatting` is `true`, this defaults to `false` instead of the value in the KoboldAI GUI."})
     singleline: Optional[bool] = fields.Boolean(metadata={"description": "Output formatting option. When enabled, removes everything after the first line of the output, including the newline.\n\nIf `disable_output_formatting` is `true`, this defaults to `false` instead of the value in the KoboldAI GUI."})
-    use_default_badwordsids: bool = fields.Boolean(load_default=True, metadata={"description": "Ban tokens that commonly worsen the writing experience for continuous story writing"})
+    use_default_badwordsids: bool = fields.Boolean(load_default=False, metadata={"description": "Ban tokens that commonly worsen the writing experience for continuous story writing"})
     disable_input_formatting: bool = fields.Boolean(load_default=True, metadata={"description": "When enabled, all input formatting options default to `false` instead of the value in the KoboldAI GUI"})
     frmtadsnsp: Optional[bool] = fields.Boolean(metadata={"description": "Input formatting option. When enabled, adds a leading space to your input if there is no trailing whitespace at the end of the previous action.\n\nIf `disable_input_formatting` is `true`, this defaults to `false` instead of the value in the KoboldAI GUI."})
     quiet: Optional[bool] = fields.Boolean(metadata={"description": "When enabled, Generated output will not be displayed in the console."})
@@ -8478,6 +8554,17 @@ def post_generate(body: GenerationInputSchema):
                 Niko the kobold stalked carefully down the alley, his small scaly figure obscured by a dusky cloak that fluttered lightly in the cold winter breeze.
               top_p: 0.9
               temperature: 0.5
+              max_context_length: 2048
+              rep_pen: 1.1
+              rep_pen_range: 2048
+              rep_pen_slope: 1.0
+              max_length: 100
+              tfs: 1.0
+              top_a : 0.0
+              top_k : 0
+              typical: 1.0
+              quiet: False
+
       responses:
         200:
           description: Successful request

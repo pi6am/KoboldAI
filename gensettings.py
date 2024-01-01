@@ -399,7 +399,7 @@ gensettingstf = [
     {
  	"uitype": "toggle",
  	"unit": "bool",
- 	"label": "Ban Bad Tokens",
+ 	"label": "Optimize Writing",
  	"id": "setusedefaultbadwordsids",
  	"min": 0,
  	"max": 1,
@@ -795,8 +795,6 @@ gensettingstf = [
     "sub_path": "UI",
     "classname": "story",
     "name": "gen_audio",
-    "extra_classes": "var_sync_alt_system_experimental_features"
-    ,
     "ui_level": 1
  	},
     {
