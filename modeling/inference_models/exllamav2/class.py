@@ -27,7 +27,10 @@ try:
 
 
     from exllamav2.cache import ExLlamaV2Cache
-    from exllamav2.model import ExLlamaV2, ExLlamaV2Config
+    from exllamav2.model import ExLlamaV2, ExLlamaV2Config, ExLlamaV2DeviceTensors
+    from exllamav2.attn import ExLlamaV2Attention
+    from exllamav2.rmsnorm import ExLlamaV2RMSNorm
+    from exllamav2.linear import ExLlamaV2Linear
     from transformers import LlamaTokenizer
     from exllamav2.generator import ExLlamaV2StreamingGenerator
     load_failed = False
@@ -42,6 +45,65 @@ model_backend_name = "ExLlama V2"
 # scores for each token.
 LOG_SAMPLER_NO_EFFECT = False
 
+class LayerSplitExLlamaV2(ExLlamaV2):
+    # ExLlamaV2 exposes stuff for offloading to other GPUs but it seems to deal
+    # with the estimated size of layers, whereas we want to give direct control
+    # of layer counts to users. Our method is a little stranger in the sense
+    # that memory size is probably more intuitive, but that's just how the
+    # system is structured as of now. Might be a little wonky if layers aren't
+    # sized uniformly, but we shall see!
+
+    def set_device_map(self, device_map, embed_cpu = True) -> int:
+        for module in self.modules:
+            print(type(module), module.weight_footprint())
+
+        self.cache_map = {}
+        device_map = list(device_map)
+
+        fixed_bytes = [0 for _ in device_map]
+
+        current_index = 0
+        for i, module in enumerate(self.modules):
+
+            if i == 0 and embed_cpu:
+                # Put token embeddings on CPU if asked for (default)
+                module.set_device_idx(-1)
+                continue
+            elif isinstance(module, ExLlamaV2Attention):
+                # The weight of attention heads is like 1/3 of the weight of
+                # hidden layers so we'll just stick it after the last hidden
+                # layer (assuming they are sequential).
+                print("Attention @ ", current_index)
+                module.set_device_idx(current_index)
+                continue
+            elif isinstance(module, ExLlamaV2RMSNorm) or isinstance(module, ExLlamaV2Linear):
+                # Norm and head layers are silently stuck in Device 0 like
+                # the ExLlama backend. Around twice the size of a hidden layer
+                # in my test model.
+                module.set_device_idx(0)
+                continue
+
+
+            device_map[current_index] -= 1
+            if device_map[current_index] < 0:
+                current_index += 1
+                assert current_index < len(device_map), f"Requested device doesn't exist in map @ idx {i}"
+
+            scratch_fixed = module.scratch_space_fixed()
+            fixed_bytes[current_index] = max(scratch_fixed, fixed_bytes[current_index])
+
+            module.set_device_idx(current_index)
+
+        # Will possibly combust due to skipping some layers
+        self.device_tensors = []
+        for idx, scratch_bytes in enumerate(fixed_bytes):
+            self.device_tensors.append(ExLlamaV2DeviceTensors(self, idx, scratch_bytes))
+
+        self.set_cache_map()
+
+        # For compatibility. Should be unused space in GB but it hasn't blown up yet
+        return 0
+
 class model_backend(InferenceModel):
     def __init__(self) -> None:
         super().__init__()
@@ -54,6 +116,7 @@ class model_backend(InferenceModel):
 
         self.model_name = ""
         self.path = None
+        self.gpu_split = None
 
         self.post_token_hooks = [
             PostTokenHooks.stream_tokens,
@@ -102,8 +165,8 @@ class model_backend(InferenceModel):
             target_dir = "models/" + self.model_name.replace("/", "_")
             snapshot_download(self.model_name, local_dir=target_dir, local_dir_use_symlinks=False, cache_dir="cache/", revision=utils.koboldai_vars.revision)
         self.model = self._get_model(self.get_local_model_path(), {})
-        #TODO support GPU split
-        self.model.load(None)
+        self.model.load(self.gpu_split or None)
+
         self.tokenizer = self._get_tokenizer(self.get_local_model_path())
 
         self.cache = ExLlamaV2Cache(self.model)
@@ -344,7 +407,7 @@ class model_backend(InferenceModel):
             self.model_config.prepare()
 
         # self.model_config.gpu_peer_fix = True
-        return ExLlamaV2(self.model_config)
+        return LayerSplitExLlamaV2(self.model_config)
 
     def _get_tokenizer(self, location: str):
         tokenizer = GenericTokenizer(LlamaTokenizer.from_pretrained(location))
@@ -360,6 +423,36 @@ class model_backend(InferenceModel):
         requested_parameters = []
         gpu_count = torch.cuda.device_count()
         layer_count = self.model_config["n_layer"] if isinstance(self.model_config, dict) else self.model_config.num_layers if hasattr(self.model_config, "num_layers") else self.model_config.n_layer if hasattr(self.model_config, "n_layer") else self.model_config.num_hidden_layers if hasattr(self.model_config, 'num_hidden_layers') else None
+
+        requested_parameters.append({
+                                        "uitype": "Valid Display",
+                                        "unit": "text",
+                                        "label": "Current Allocated Layers: %1/{}".format(layer_count), #%1 will be the validation value
+                                        "id": "valid_layers",
+                                        "max": layer_count,
+                                        "step": 1,
+                                        "check": {"sum": ["{}_Layers".format(i) for i in range(gpu_count)], "value": layer_count, 'check': "="},
+                                        "menu_path": "Layers",
+                                        "extra_classes": "",
+                                        "refresh_model_inputs": False
+                                    })
+        for i in range(gpu_count):
+            requested_parameters.append({
+                                            "uitype": "slider",
+                                            "unit": "int",
+                                            "label": "{} Layers".format(torch.cuda.get_device_name(i)),
+                                            "id": "{}_Layers".format(i),
+                                            "min": 0,
+                                            "max": layer_count,
+                                            "step": 1,
+                                            "check": {"sum": ["{}_Layers".format(i) for i in range(gpu_count)], "value": layer_count, 'check': "="},
+                                            "check_message": "The sum of assigned layers must equal {}".format(layer_count),
+                                            "default": saved_data['layers'][i] if len(saved_data['layers']) > i else layer_count if i==0 else 0,
+                                            "tooltip": "The number of layers to put on {}.".format(torch.cuda.get_device_name(i)),
+                                            "menu_path": "Layers",
+                                            "extra_classes": "",
+                                            "refresh_model_inputs": False
+                                        })
 
         requested_parameters.append({
             "uitype": "slider",
@@ -410,6 +503,19 @@ class model_backend(InferenceModel):
 
     def set_input_parameters(self, parameters):
         gpu_count = torch.cuda.device_count()
+        layers = []
+        for i in range(gpu_count):
+            if isinstance(parameters["{}_Layers".format(i)], str) and parameters["{}_Layers".format(i)].isnumeric():
+                layers.append(int(parameters["{}_Layers".format(i)]))
+            elif isinstance(parameters["{}_Layers".format(i)], str):
+                 layers.append(None)
+            else:
+                layers.append(parameters["{}_Layers".format(i)])
+
+        self.layers = layers
+        self.gpu_split = []
+        for i, l in enumerate(layers):
+            self.gpu_split.append(l)
 
         self.model_config.max_seq_len = parameters["max_ctx"]
         self.model_config.compress_pos_emb = parameters["compress_emb"]
