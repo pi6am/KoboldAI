@@ -54,9 +54,6 @@ class LayerSplitExLlamaV2(ExLlamaV2):
     # sized uniformly, but we shall see!
 
     def set_device_map(self, device_map, embed_cpu = True) -> int:
-        for module in self.modules:
-            print(type(module), module.weight_footprint())
-
         self.cache_map = {}
         device_map = list(device_map)
 
@@ -73,7 +70,6 @@ class LayerSplitExLlamaV2(ExLlamaV2):
                 # The weight of attention heads is like 1/3 of the weight of
                 # hidden layers so we'll just stick it after the last hidden
                 # layer (assuming they are sequential).
-                print("Attention @ ", current_index)
                 module.set_device_idx(current_index)
                 continue
             elif isinstance(module, ExLlamaV2RMSNorm) or isinstance(module, ExLlamaV2Linear):
