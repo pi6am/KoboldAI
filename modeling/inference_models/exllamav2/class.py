@@ -411,8 +411,8 @@ class model_backend(InferenceModel):
 
     def get_requested_parameters(self, model_name, model_path, menu_path, parameters = {}):
         saved_data = {'max_ctx': 2048, 'compress_emb': 1, 'ntk_alpha': 1}
-        if os.path.exists("settings/{}.exllama.model_backend.settings".format(model_name.replace("/", "_"))) and 'base_url' not in vars(self):
-            with open("settings/{}.exllama.model_backend.settings".format(model_name.replace("/", "_")), "r") as f:
+        if os.path.exists("settings/{}.exllamav2.model_backend.settings".format(model_name.replace("/", "_"))) and 'base_url' not in vars(self):
+            with open("settings/{}.exllamav2.model_backend.settings".format(model_name.replace("/", "_")), "r") as f:
                 temp = json.load(f)
                 for key in temp:
                     saved_data[key] = temp[key]
