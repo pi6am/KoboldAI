@@ -418,32 +418,39 @@ class model_backend(InferenceModel):
                     saved_data[key] = temp[key]
         requested_parameters = []
         gpu_count = torch.cuda.device_count()
-        layer_count = self.model_config["n_layer"] if isinstance(self.model_config, dict) else self.model_config.num_layers if hasattr(self.model_config, "num_layers") else self.model_config.n_layer if hasattr(self.model_config, "n_layer") else self.model_config.num_hidden_layers if hasattr(self.model_config, 'num_hidden_layers') else None
+        total_layer_count = self.model_config["n_layer"] if isinstance(self.model_config, dict) else self.model_config.num_layers if hasattr(self.model_config, "num_layers") else self.model_config.n_layer if hasattr(self.model_config, "n_layer") else self.model_config.num_hidden_layers if hasattr(self.model_config, 'num_hidden_layers') else None
 
         requested_parameters.append({
                                         "uitype": "Valid Display",
                                         "unit": "text",
-                                        "label": "Current Allocated Layers: %1/{}".format(layer_count), #%1 will be the validation value
+                                        "label": "Current Allocated Layers: %1/{}".format(total_layer_count), #%1 will be the validation value
                                         "id": "valid_layers",
-                                        "max": layer_count,
+                                        "max": total_layer_count,
                                         "step": 1,
-                                        "check": {"sum": ["{}_Layers".format(i) for i in range(gpu_count)], "value": layer_count, 'check': "="},
+                                        "check": {"sum": ["{}_Layers".format(i) for i in range(gpu_count)], "value": total_layer_count, 'check': "="},
                                         "menu_path": "Layers",
                                         "extra_classes": "",
                                         "refresh_model_inputs": False
                                     })
+        saved_layer_count_per_device = saved_data.get("layers", [])
         for i in range(gpu_count):
+            # If we don't have a saved layer count, assume a default configuration
+            # where the first device has all layers.
+            device_layer_count = total_layer_count if i == 0 else 0
+            if saved_layer_count_per_device and len(saved_layer_count_per_device) > i:
+                device_layer_count = saved_layer_count_per_device[i]
+
             requested_parameters.append({
                                             "uitype": "slider",
                                             "unit": "int",
                                             "label": "{} Layers".format(torch.cuda.get_device_name(i)),
                                             "id": "{}_Layers".format(i),
                                             "min": 0,
-                                            "max": layer_count,
+                                            "max": total_layer_count,
                                             "step": 1,
-                                            "check": {"sum": ["{}_Layers".format(i) for i in range(gpu_count)], "value": layer_count, 'check': "="},
-                                            "check_message": "The sum of assigned layers must equal {}".format(layer_count),
-                                            "default": saved_data['layers'][i] if len(saved_data['layers']) > i else layer_count if i==0 else 0,
+                                            "check": {"sum": ["{}_Layers".format(i) for i in range(gpu_count)], "value": total_layer_count, 'check': "="},
+                                            "check_message": "The sum of assigned layers must equal {}".format(total_layer_count),
+                                            "default": device_layer_count,
                                             "tooltip": "The number of layers to put on {}.".format(torch.cuda.get_device_name(i)),
                                             "menu_path": "Layers",
                                             "extra_classes": "",
@@ -541,7 +548,8 @@ class model_backend(InferenceModel):
                 {
                     "max_ctx": self.model_config.max_seq_len,
                     "compress_emb": self.model_config.compress_pos_emb,
-                    "ntk_alpha": self.model_config.alpha_value
+                    "ntk_alpha": self.model_config.alpha_value,
+                    "layers": self.layers
                 },
                 f,
                 indent="",
