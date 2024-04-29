@@ -26,7 +26,7 @@ try:
     from modeling.tokenizer import GenericTokenizer
 
 
-    from exllamav2.cache import ExLlamaV2Cache
+    from exllamav2.cache import ExLlamaV2Cache, ExLlamaV2Cache_8bit
     from exllamav2.model import ExLlamaV2, ExLlamaV2Config, ExLlamaV2DeviceTensors
     from exllamav2.attn import ExLlamaV2Attention
     from exllamav2.rmsnorm import ExLlamaV2RMSNorm
@@ -170,7 +170,10 @@ class model_backend(InferenceModel):
 
         self.tokenizer = self._get_tokenizer(self.get_local_model_path())
 
-        self.cache = ExLlamaV2Cache(self.model)
+        if self.cache_quant == "8-bit":
+            self.cache = ExLlamaV2Cache_8bit(self.model)
+        else:
+            self.cache = ExLlamaV2Cache(self.model)
 
         self.generator = ExLlamaV2StreamingGenerator(self.model, self.cache, self.tokenizer.tokenizer)
 
@@ -507,10 +510,22 @@ class model_backend(InferenceModel):
             "extra_classes": "",
             "refresh_model_inputs": False
         })
-
+        requested_parameters.append({
+            "uitype": "dropdown",
+            "unit": "text",
+            "label": "Cache Quantization",
+            "id": "cache_quant",
+            "default": temp['cache_quant'] if 'cache_quant' in temp else '8-bit',
+            "tooltip": "Whether or not to use BnB's 4-bit or 8-bit mode",
+            "menu_path": "Layers",
+            "children": [{'text': '8-bit', 'value': '8-bit'}, {'text': '16-bit', 'value':'16-bit'}],
+            "extra_classes": "",
+            "refresh_model_inputs": False
+        })
         return requested_parameters
 
     def set_input_parameters(self, parameters):
+        self.cache_quant = parameters['cache_quant'] if 'cache_quant' in parameters else False
         gpu_count = torch.cuda.device_count()
         layers = []
         for i in range(gpu_count):
@@ -555,7 +570,8 @@ class model_backend(InferenceModel):
                     "max_ctx": self.model_config.max_seq_len,
                     "compress_emb": self.model_config.compress_pos_emb,
                     "ntk_alpha": self.model_config.alpha_value,
-                    "layers": self.layers
+                    "layers": self.layers,
+                    "cache_quant": self.cache_quant,
                 },
                 f,
                 indent="",
