@@ -425,6 +425,8 @@ class model_backend(InferenceModel):
                 temp = json.load(f)
                 for key in temp:
                     saved_data[key] = temp[key]
+        else:
+            temp = {}
         requested_parameters = []
         gpu_count = torch.cuda.device_count()
         total_layer_count = self.model_config["n_layer"] if isinstance(self.model_config, dict) else self.model_config.num_layers if hasattr(self.model_config, "num_layers") else self.model_config.n_layer if hasattr(self.model_config, "n_layer") else self.model_config.num_hidden_layers if hasattr(self.model_config, 'num_hidden_layers') else None
