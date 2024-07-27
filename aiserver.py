@@ -255,7 +255,7 @@ model_menu = {
         MenuPath("Load a model from its directory", "NeoCustom"),
         MenuPath("Load an old GPT-2 model (eg CloverEdition)", "GPT2Custom"),
         MenuModel("Load custom Pytorch model from Hugging Face", "customhuggingface", ""),
-        MenuModel("Load old GPTQ model from Hugging Face", "customgptq", "", model_backend="GPTQ"),
+        #MenuModel("Load old GPTQ model from Hugging Face", "customgptq", "", model_backend="GPTQ"),
         MenuFolder("Instruct Models", "instructlist"),
         MenuFolder("Novel Models", "novellist"),
         MenuFolder("Chat Models", "chatlist"),
@@ -1460,7 +1460,7 @@ def general_startup(override_args=None):
     parser.add_argument("--model_parameters", action="store", default="", help="json of id values to use for the input to the model loading process (set to help to get required parameters)")
     parser.add_argument("--path", help="Specify the Path for local models (For model NeoCustom or GPT2Custom)")
     parser.add_argument("--apikey", help="Specify the API key to use for online services")
-    parser.add_argument("--sh_apikey", help="Specify the API key to use for txt2img from the Stable Horde. Get a key from https://horde.koboldai.net/register")
+    parser.add_argument("--sh_apikey", help="Specify the API key to use for txt2img from the Stable Horde. Get a key from https://aihorde.net/register")
     parser.add_argument("--req_model", type=str, action='append', required=False, help="Which models which we allow to generate for us during cluster mode. Can be specified multiple times.")
     parser.add_argument("--revision", help="Specify the model revision for huggingface models (can be a git branch/tag name or a git commit hash)")
     parser.add_argument("--cpu", action='store_true', help="By default unattended launches are on the GPU use this option to force CPU usage.")
@@ -7443,7 +7443,7 @@ def text2img_horde(prompt: str) -> Optional[Image.Image]:
             show_error_notification(
                 "Stable Horde failure",
                 "Stable Horde is currently not accepting anonymous requuests. " \
-                "Try again in a few minutes or register for priority access at https://horde.koboldai.net",
+                "Try again in a few minutes or register for priority access at https://aihorde.net",
                 do_log=True
             )
             return None
